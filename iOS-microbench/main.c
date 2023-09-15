@@ -33,8 +33,8 @@ struct proc_threadcounts {
 #define PROC_PIDTHREADCOUNTS_SIZE (sizeof(struct proc_threadcounts))
 int proc_pidinfo(int pid, int flavor, uint64_t arg, void *buffer, int buffersize);
 
-static int its = 8192 * 4 * 2;
-static int outer_its = 64 * 2;
+static int its = 8192 * 4 * 2 ;
+static int outer_its = 64 * 2 ;
 static int unroll = 1; // TODO
 const char *delim = "\t";
 
@@ -54,7 +54,7 @@ static void init_rdtsc() {
 
 static unsigned long long int rdtsc() {
 	proc_pidinfo(pid, PROC_PIDTHREADCOUNTS, target_tid, rbuf, countsize);
-	struct proc_threadcounts_data *p = &(rbuf->ptc_counts[0]);
+	struct proc_threadcounts_data *p = &(rbuf->ptc_counts[1]);
 	uint64_t cycle = p->ptcd_cycles;
 	return cycle;
 }
@@ -289,11 +289,11 @@ void make_routine(uint32_t *ibuf, int icount, int instr_type) {
   sys_icache_invalidate(ibuf, o * 4);
 }
 
-int test_entry() {
+int test_entry_zero() {
   int test_high_perf_cores = 1;
   int instr_type = 1;
-  int start_icount = 50;
-  int stop_icount = 1000;
+  int start_icount = 30;
+  int stop_icount = 150;
   int stride_icount = 1;
 
   if (test_high_perf_cores) {
@@ -318,7 +318,9 @@ int test_entry() {
     volatile uint64_t cycle_end = rdtsc();
     __asm__ volatile("isb");
 
-    printf("base cycle: %llu\n", cycle_end - cycle_start);
+    
+
+  printf("base cycle: %llu\n", cycle_end - cycle_start);
 
     while(1) {
         __asm__ volatile("isb");
@@ -339,6 +341,63 @@ int test_entry() {
         printf("IPC: %f\n", 1344.0 / ((double)cycle / (double)loop_count));
         sleep(1);
     }
+}
+
+int data[16][2] = {
+    {415, 2295},
+    {111, 623},
+    {29, 129},
+    {36, 108},
+    {79, 380},
+    {87, 434},
+    {34, 158},
+    {32, 144},
+    {-1, 853},
+    {11, 30},
+    {32, 88},
+    {32, 88},
+    {-1, 129},
+    {-1, 88},
+    {-1, 853},
+    {-1, 125}
+};
+
+int getValueForPair(int instr_type, int test_high_perf_cores) {
+    return data[instr_type][test_high_perf_cores];
+}
+
+
+
+int test_entry(int instr_type, int test_high_perf_cores, int start_icount, int stop_icount, const char* basePath) {
+  // int test_high_perf_cores = 1;
+  // int instr_type = 1;
+  // int start_icount = 1800;
+  // int stop_icount = 2500;
+  int stride_icount = 1;
+
+  if (test_high_perf_cores) {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+  } else {
+    pthread_set_qos_class_self_np(QOS_CLASS_BACKGROUND, 0);
+  }
+
+  init_rdtsc();
+  // Warm up cache and predictor
+  volatile uint64_t warmup1 = rdtsc();
+  warmup1 = rdtsc();
+  warmup1 = rdtsc();
+  warmup1 = rdtsc();
+  warmup1 = rdtsc();
+  warmup1 = rdtsc();
+    
+    __asm__ volatile("isb");
+    volatile uint64_t cycle_start = rdtsc();
+    __asm__ volatile("isb");
+    __asm__ volatile("isb");
+    volatile uint64_t cycle_end = rdtsc();
+    __asm__ volatile("isb");
+
+    
     
    uint64_t *data1, *data2;
    init_dbufs(&data1, &data2);
@@ -348,9 +407,18 @@ int test_entry() {
    uint32_t *ibuf = (uint32_t *)mapping;
  
    uint64_t next = 0;
+
+   char filename[256];  // Buffer for filename
+   snprintf(filename, sizeof(filename), "%s/output_%d_%d_%d_%d.tsv", basePath, instr_type, test_high_perf_cores, start_icount, stop_icount);
+   FILE *file = fopen(filename, "w");
+    if (!file) {
+        perror("Error opening file for writing");
+        return 1;  // Return with error code
+    }
+
  
    for (int icount = start_icount; icount <= stop_icount; icount += stride_icount) {
-     make_routine(ibuf, icount, 15);
+     make_routine(ibuf, icount, instr_type);
  
      uint64_t (*routine)(uint64_t, uint64_t, uint64_t *, uint64_t *, uint64_t) = (void *)ibuf;
  
@@ -384,7 +452,39 @@ int test_entry() {
             1.0 * min_diff / its / unroll, delim,
             1.0 * sum_diff / its / unroll / outer_its, delim,
             1.0 * max_diff / its / unroll);
+    fprintf(file, "%d%s%.2f%s%.2f%s%.2f\n", icount, delim,
+      1.0 * min_diff / its / unroll, delim,
+      1.0 * sum_diff / its / unroll / outer_its, delim,
+      1.0 * max_diff / its / unroll);
    }
+
+   fclose(file);  // Close the file
 
   return 0;
 }
+
+int test_everything(const char *path) {
+  int instr_type, test_high_perf_cores;
+    for (instr_type = 0; instr_type <= 15; instr_type++) {
+        for (test_high_perf_cores = 0; test_high_perf_cores <= 1; test_high_perf_cores++) {
+            int value = getValueForPair(instr_type, test_high_perf_cores);
+            if(value == -1) continue;
+            int start_icount = 0.5 * value;
+            int stop_icount = 1.5 * value;
+            printf("instr_type: %d, test_high_perf_cores: %d, start_icount: %d, stop_icount: %d\n", 
+            instr_type, test_high_perf_cores, start_icount, stop_icount);
+
+            test_entry(instr_type, test_high_perf_cores, start_icount, stop_icount, path);
+            printf("======\n");
+        }
+    }
+    return 0;
+}
+
+int test_entry_manual(const char* basePath) {
+
+  test_entry(0, 1, 50, 1000, basePath);
+  return 0;
+}
+
+
